@@ -88,10 +88,10 @@ def initialize_v3() -> None:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS settings (
-                scope_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
-                PRIMARY KEY(scope_id, key)
+                PRIMARY KEY(chat_id, key)
             );
             CREATE TABLE IF NOT EXISTS daily_activity (
                 chat_id INTEGER NOT NULL,
@@ -193,7 +193,7 @@ def initialize_v3() -> None:
 def get_setting(scope_id: int, key: str) -> Optional[str]:
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT value FROM settings WHERE scope_id = ? AND key = ?", (scope_id, key)
+            "SELECT value FROM settings WHERE chat_id = ? AND key = ?", (scope_id, key)
         ).fetchone()
     return str(row["value"]) if row else None
 
@@ -202,8 +202,8 @@ def set_setting(scope_id: int, key: str, value: str) -> None:
     with db_connect() as conn:
         conn.execute(
             """
-            INSERT INTO settings(scope_id, key, value) VALUES (?, ?, ?)
-            ON CONFLICT(scope_id, key) DO UPDATE SET value = excluded.value
+            INSERT INTO settings(chat_id, key, value) VALUES (?, ?, ?)
+            ON CONFLICT(chat_id, key) DO UPDATE SET value = excluded.value
             """,
             (scope_id, key, value),
         )
