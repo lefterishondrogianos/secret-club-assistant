@@ -637,6 +637,15 @@ def _welcome_value(chat_id: int, key: str, default: str = "") -> str:
     return default if value is None else value
 
 
+DEFAULT_WELCOME_TEXT = (
+    "🖤 <b>Welcome to Secret Club</b> 🖤\n\n"
+    "Καλώς ήρθες {mention}!\n\n"
+    "Χαιρόμαστε που έγινες μέλος του <b>Secret Club</b>.\n\n"
+    "📌 Πάτησε τα κουμπιά παρακάτω για να ενημερωθείς και να ξεκινήσεις.\n\n"
+    "✨ Σου ευχόμαστε όμορφες γνωριμίες και καλή διασκέδαση!"
+)
+
+
 def _render_welcome(text: str, user, chat) -> str:
     values = {
         "mention": user.mention_html(),
@@ -650,27 +659,57 @@ def _render_welcome(text: str, user, chat) -> str:
     return text
 
 
+def welcome_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("📜 Κανόνες", callback_data=f"welcome:rules:{user_id}"),
+            InlineKeyboardButton("✅ Verification", callback_data=f"welcome:verify:{user_id}"),
+        ],
+        [
+            InlineKeyboardButton("❓ Συχνές Ερωτήσεις", callback_data=f"welcome:faq:{user_id}"),
+            InlineKeyboardButton("💬 Επικοινωνία με Admin", callback_data=f"welcome:admin:{user_id}"),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+async def _delete_message_later(bot, chat_id: int, message_id: int, seconds: int) -> None:
+    await asyncio.sleep(seconds)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramError:
+        pass
+
+
 async def _send_custom_welcome(context: ContextTypes.DEFAULT_TYPE, chat, user) -> bool:
     if _welcome_value(chat.id, "enabled", "1") != "1":
         return False
-    kind = _welcome_value(chat.id, "type")
-    if not kind:
-        return False
-    text = _render_welcome(_welcome_value(chat.id, "text"), user, chat)
+    kind = _welcome_value(chat.id, "type", "text")
+    text = _render_welcome(_welcome_value(chat.id, "text", DEFAULT_WELCOME_TEXT), user, chat)
     file_id = _welcome_value(chat.id, "file_id")
-    kwargs = {"chat_id": chat.id, "parse_mode": ParseMode.HTML}
+    markup = welcome_keyboard(user.id)
+    kwargs = {"chat_id": chat.id, "parse_mode": ParseMode.HTML, "reply_markup": markup}
+    sent = None
     if kind == "text":
-        await context.bot.send_message(text=text, **kwargs)
-    elif kind == "photo":
-        await context.bot.send_photo(photo=file_id, caption=text or None, **kwargs)
-    elif kind == "video":
-        await context.bot.send_video(video=file_id, caption=text or None, **kwargs)
-    elif kind == "animation":
-        await context.bot.send_animation(animation=file_id, caption=text or None, **kwargs)
-    elif kind == "document":
-        await context.bot.send_document(document=file_id, caption=text or None, **kwargs)
+        sent = await context.bot.send_message(text=text, **kwargs)
+    elif kind == "photo" and file_id:
+        sent = await context.bot.send_photo(photo=file_id, caption=text or None, **kwargs)
+    elif kind == "video" and file_id:
+        sent = await context.bot.send_video(video=file_id, caption=text or None, **kwargs)
+    elif kind == "animation" and file_id:
+        sent = await context.bot.send_animation(animation=file_id, caption=text or None, **kwargs)
+    elif kind == "document" and file_id:
+        sent = await context.bot.send_document(document=file_id, caption=text or None, **kwargs)
     else:
-        return False
+        sent = await context.bot.send_message(text=text, **kwargs)
+    try:
+        seconds = max(0, int(_welcome_value(chat.id, "autodelete", "60")))
+    except ValueError:
+        seconds = 60
+    if sent and seconds > 0:
+        context.application.create_task(
+            _delete_message_later(context.bot, chat.id, sent.message_id, seconds)
+        )
     return True
 
 
@@ -688,6 +727,26 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     arg = " ".join(context.args).strip()
     command = arg.lower()
+    if command.startswith("autodelete"):
+        parts = command.split()
+        if len(parts) != 2:
+            await message.reply_text("Χρήση: /setwelcome autodelete 60 ή /setwelcome autodelete off")
+            return
+        if parts[1] in {"off", "0", "disable"}:
+            set_setting(chat.id, "welcome_autodelete", "0")
+            await message.reply_text("🗑️ Η αυτόματη διαγραφή απενεργοποιήθηκε.")
+            return
+        try:
+            seconds = int(parts[1])
+        except ValueError:
+            await message.reply_text("Ο χρόνος πρέπει να είναι αριθμός δευτερολέπτων.")
+            return
+        if seconds < 10 or seconds > 86400:
+            await message.reply_text("Δώσε χρόνο από 10 έως 86400 δευτερόλεπτα.")
+            return
+        set_setting(chat.id, "welcome_autodelete", str(seconds))
+        await message.reply_text(f"🗑️ Το welcome θα διαγράφεται μετά από {seconds} δευτερόλεπτα.")
+        return
     if command in {"off", "disable"}:
         set_setting(chat.id, "welcome_enabled", "0")
         await message.reply_text("🔕 Το προσαρμοσμένο welcome απενεργοποιήθηκε.")
@@ -697,21 +756,23 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await message.reply_text("🔔 Το προσαρμοσμένο welcome ενεργοποιήθηκε.")
         return
     if command in {"reset", "delete", "clear"}:
-        for key in ("enabled", "type", "text", "file_id"):
+        for key in ("enabled", "type", "text", "file_id", "autodelete"):
             delete_setting(chat.id, f"welcome_{key}")
-        await message.reply_text("♻️ Το welcome επανήλθε στο αρχικό μήνυμα του bot.")
+        await message.reply_text("♻️ Το welcome επανήλθε στο επαγγελματικό προεπιλεγμένο μήνυμα.")
         return
     if command == "status":
-        kind = _welcome_value(chat.id, "type", "default")
+        kind = _welcome_value(chat.id, "type", "text")
         enabled = _welcome_value(chat.id, "enabled", "1") == "1"
+        autodelete = _welcome_value(chat.id, "autodelete", "60")
         await message.reply_text(
             f"👋 Welcome: {'ενεργό' if enabled else 'ανενεργό'}\nΤύπος: {kind}\n"
+            f"Αυτόματη διαγραφή: {'OFF' if autodelete == '0' else autodelete + ' δευτ.'}\n"
+            "Κουμπιά: Κανόνες, Verification, FAQ, Admin\n"
             "Placeholders: {mention} {first_name} {username} {user_id} {group}"
         )
         return
     if command == "preview":
-        if not await _send_custom_welcome(context, chat, actor):
-            await message.reply_text("Δεν έχει οριστεί προσαρμοσμένο welcome.")
+        await _send_custom_welcome(context, chat, actor)
         return
 
     source = message.reply_to_message
@@ -719,7 +780,7 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     file_id = ""
     text = arg
     if source:
-        text = source.caption_html or source.text_html or source.caption or source.text or arg
+        text = source.caption_html or source.text_html or source.caption or source.text or DEFAULT_WELCOME_TEXT
         if source.photo:
             kind, file_id = "photo", source.photo[-1].file_id
         elif source.video:
@@ -737,8 +798,10 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await message.reply_text(
             "Χρήση:\n"
             "• /setwelcome Το μήνυμά σου\n"
-            "• reply σε κείμενο/φωτογραφία/video/GIF/αρχείο με /setwelcome\n"
+            "• reply σε φωτογραφία με /setwelcome για banner + caption\n"
+            "• /setwelcome autodelete 60 | autodelete off\n"
             "• /setwelcome preview | status | on | off | reset\n\n"
+            "Τα κουμπιά Κανόνες, Verification, FAQ και Admin προστίθενται αυτόματα.\n"
             "Placeholders: {mention} {first_name} {username} {user_id} {group}"
         )
         return
@@ -753,7 +816,32 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     set_setting(chat.id, "welcome_text", text)
     set_setting(chat.id, "welcome_file_id", file_id)
     set_setting(chat.id, "welcome_enabled", "1")
-    await message.reply_text("✅ Το νέο welcome αποθηκεύτηκε μόνιμα. Γράψε /setwelcome preview για δοκιμή.")
+    if get_setting(chat.id, "welcome_autodelete") is None:
+        set_setting(chat.id, "welcome_autodelete", "60")
+    await message.reply_text("✅ Το επαγγελματικό welcome αποθηκεύτηκε. Γράψε /setwelcome preview για δοκιμή.")
+
+
+def panel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👋 Welcome", callback_data="panel:welcome"), InlineKeyboardButton("✅ Verification", callback_data="panel:verification")],
+        [InlineKeyboardButton("👥 Members", callback_data="panel:members"), InlineKeyboardButton("📢 Broadcast", callback_data="panel:broadcast")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="panel:settings"), InlineKeyboardButton("📊 Statistics", callback_data="panel:stats")],
+        [InlineKeyboardButton("❌ Κλείσιμο", callback_data="panel:close")],
+    ])
+
+
+async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+    if not chat or not user or not message or chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if message:
+            await message.reply_text("Το /panel ανοίγει μέσα στην ομάδα.")
+        return
+    if not await is_admin(context, chat.id, user.id):
+        await message.reply_text("❌ Δεν έχεις δικαίωμα πρόσβασης στο Admin Panel.")
+        return
+    await message.reply_text("🛡️ <b>SECRET CLUB ADMIN PANEL</b>\n\nΕπίλεξε λειτουργία:", parse_mode=ParseMode.HTML, reply_markup=panel_keyboard())
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -763,6 +851,72 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
 
     data = query.data or ""
+
+    if data.startswith("welcome:"):
+        try:
+            _, action, expected = data.split(":", 2)
+            expected_user_id = int(expected)
+        except (ValueError, TypeError):
+            await query.answer("Μη έγκυρο κουμπί.", show_alert=True)
+            return
+        if query.from_user.id != expected_user_id:
+            await query.answer("Αυτό το κουμπί είναι για το νέο μέλος.", show_alert=True)
+            return
+        alerts = {
+            "rules": "📜 Σεβάσου όλα τα μέλη, μην κοινοποιείς ιδιωτικό υλικό, μην κάνεις spam και ακολούθησε τις οδηγίες των admins.",
+            "verify": "✅ Για verification ακολούθησε τη διαδικασία του bot με /verify ή επικοινώνησε με admin.",
+            "faq": "❓ Η ομάδα είναι δωρεάν. Για βοήθεια χρησιμοποίησε /ask ή το κουμπί επικοινωνίας με admin.",
+            "admin": (f"💬 Επικοινώνησε με @{ADMIN_USERNAME}." if ADMIN_USERNAME else "💬 Κάνε tag έναν διαχειριστή της ομάδας για βοήθεια."),
+        }
+        await query.answer(alerts.get(action, "Δεν βρέθηκε επιλογή."), show_alert=True)
+        return
+
+    if data.startswith("panel:"):
+        chat_id = query.message.chat.id
+        if not await is_admin(context, chat_id, query.from_user.id):
+            await query.answer("Μόνο admins.", show_alert=True)
+            return
+        action = data.split(":", 1)[1]
+        if action == "close":
+            await query.message.delete()
+            return
+        if action == "home":
+            await query.edit_message_text("🛡️ <b>SECRET CLUB ADMIN PANEL</b>\n\nΕπίλεξε λειτουργία:", parse_mode=ParseMode.HTML, reply_markup=panel_keyboard())
+            return
+        back = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Πίσω", callback_data="panel:home")]])
+        if action == "welcome":
+            text = ("👋 <b>WELCOME</b>\n\n"
+                    f"Κατάσταση: <b>{'ON' if _welcome_value(chat_id,'enabled','1') == '1' else 'OFF'}</b>\n"
+                    f"Auto-delete: <b>{_welcome_value(chat_id,'autodelete','60')} δευτ.</b>\n\n"
+                    "Εντολές:\n<code>/setwelcome</code>\n<code>/setwelcome preview</code>\n"
+                    "<code>/setwelcome on</code> / <code>off</code>\n<code>/setwelcome autodelete 60</code>")
+        elif action == "verification":
+            text = ("✅ <b>VERIFICATION</b>\n\n"
+                    "Κάνε reply σε μέλος με <code>/verifyuser</code> ή χρησιμοποίησε ID.\n"
+                    "<code>/verifyallknown</code> — όλα τα γνωστά μέλη\n"
+                    "<code>/verifiedlist</code> — λίστα verified\n"
+                    "<code>/unverifiedlist</code> — λίστα unverified")
+        elif action in {"members", "stats"}:
+            now = int(time.time())
+            day_ago = now - 86400
+            with db_connect() as conn:
+                total = int(conn.execute("SELECT COUNT(*) c FROM members WHERE chat_id=?", (chat_id,)).fetchone()["c"])
+                new_today = int(conn.execute("SELECT COUNT(*) c FROM members WHERE chat_id=? AND joined_at>=?", (chat_id,day_ago)).fetchone()["c"])
+                verified = int(conn.execute("SELECT COUNT(DISTINCT m.user_id) c FROM members m LEFT JOIN verified_users v ON v.user_id=m.user_id WHERE m.chat_id=? AND COALESCE(v.verified,m.verified,0)=1", (chat_id,)).fetchone()["c"])
+            text = (f"📊 <b>{'STATISTICS' if action == 'stats' else 'MEMBERS'}</b>\n\n"
+                    f"Γνωστά μέλη: <b>{total}</b>\nVerified: <b>{verified}</b>\n"
+                    f"Unverified: <b>{max(0,total-verified)}</b>\nΝέα τις τελευταίες 24 ώρες: <b>{new_today}</b>")
+        elif action == "broadcast":
+            text = ("📢 <b>BROADCAST</b>\n\nΓια ανακοίνωση γράψε:\n"
+                    "<code>/announce Το μήνυμά σου</code>\n\n"
+                    "Η αποστολή παραμένει προστατευμένη για admins.")
+        else:
+            text = ("⚙️ <b>SETTINGS</b>\n\n"
+                    "<code>/setwelcome on|off</code>\n<code>/feature</code> — λειτουργίες V3\n"
+                    "<code>/botstatus</code> — κατάσταση bot\n<code>/adminhelp</code> — όλες οι εντολές")
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=back)
+        return
+
     if data == "menu":
         await query.edit_message_text(
             WELCOME_TEXT,
@@ -1578,6 +1732,7 @@ async def post_init(application: Application) -> None:
             ("top", "Top δραστηριότητας"),
             ("adminhelp", "Εντολές διαχειριστών"),
             ("botstatus", "Κατάσταση και ρυθμίσεις bot"),
+            ("panel", "Admin panel με κουμπιά"),
         ]
     )
 
@@ -1614,6 +1769,7 @@ def run() -> None:
     application.add_handler(CommandHandler("adminhelp", admin_help))
     application.add_handler(CommandHandler("botstatus", bot_status))
     application.add_handler(CommandHandler("setwelcome", setwelcome_command))
+    application.add_handler(CommandHandler("panel", panel_command))
     application.add_handler(CommandHandler("warn", warn_command))
     application.add_handler(CommandHandler("clearwarns", unwarn_command))
     application.add_handler(CommandHandler("mute", mute_command))
