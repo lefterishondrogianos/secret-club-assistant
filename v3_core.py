@@ -310,6 +310,8 @@ def set_verified(
     actor_id: Optional[int] = None,
     source: str = "system",
     chat_id: int = 0,
+    username: Optional[str] = None,
+    first_name: Optional[str] = None,
 ) -> None:
     now = int(time.time())
     with db_connect() as conn:
@@ -325,7 +327,23 @@ def set_verified(
             """,
             (user_id, int(value), now, actor_id, source),
         )
-        conn.execute("UPDATE members SET verified = ? WHERE user_id = ?", (int(value), user_id))
+        # Keep the per-group members table synchronized with the global verification record.
+        # If the member has not yet been recorded in this group, create a minimal row so
+        # dashboard/list commands immediately reflect the manual action.
+        if chat_id:
+            conn.execute(
+                """
+                INSERT INTO members(chat_id,user_id,username,first_name,joined_at,last_active,verified)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                    username=COALESCE(excluded.username,members.username),
+                    first_name=COALESCE(excluded.first_name,members.first_name),
+                    verified=excluded.verified
+                """,
+                (chat_id,user_id,username,first_name,now,now,int(value)),
+            )
+        else:
+            conn.execute("UPDATE members SET verified = ? WHERE user_id = ?", (int(value), user_id))
         if actor_id is not None:
             conn.execute(
                 """
@@ -374,7 +392,8 @@ async def _manual_verify_change(
     actor_id = update.effective_user.id
     chat_id = update.effective_chat.id if update.effective_chat else 0
     set_verified(
-        target_id, new_value, actor_id=actor_id, source="manual", chat_id=chat_id
+        target_id, new_value, actor_id=actor_id, source="manual", chat_id=chat_id,
+        username=username, first_name=first_name
     )
     label = format_user(target_id, username, first_name)
     status = "επαληθεύτηκε" if new_value else "δεν είναι πλέον επαληθευμένο"
@@ -488,7 +507,12 @@ async def verify_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id = update.effective_chat.id
     with db_connect() as conn:
         total = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM members WHERE chat_id=?", (chat_id,)).fetchone()["c"])
-        verified = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM members WHERE chat_id=? AND verified=1", (chat_id,)).fetchone()["c"])
+        verified = int(conn.execute(
+            """SELECT COUNT(DISTINCT m.user_id) c
+               FROM members m LEFT JOIN verified_users v ON v.user_id=m.user_id
+               WHERE m.chat_id=? AND COALESCE(v.verified,m.verified,0)=1""",
+            (chat_id,),
+        ).fetchone()["c"])
         pending = int(conn.execute("SELECT COUNT(*) c FROM verifications WHERE status='pending'").fetchone()["c"])
     await update.effective_message.reply_text(
         f"📊 <b>VERIFICATION STATS</b>\n\nΓνωστά μέλη: <b>{total}</b>\nVerified: <b>{verified}</b>\nUnverified: <b>{max(0,total-verified)}</b>\nPending αιτήσεις: <b>{pending}</b>",
@@ -503,8 +527,10 @@ async def _verification_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
     with db_connect() as conn:
         rows = conn.execute(
             """
-            SELECT user_id,username,first_name,last_active FROM members
-            WHERE chat_id=? AND verified=? ORDER BY COALESCE(last_active,0) DESC LIMIT 100
+            SELECT m.user_id,m.username,m.first_name,m.last_active FROM members m
+            LEFT JOIN verified_users v ON v.user_id=m.user_id
+            WHERE m.chat_id=? AND COALESCE(v.verified,m.verified,0)=?
+            ORDER BY COALESCE(m.last_active,0) DESC LIMIT 100
             """,
             (chat_id, int(value)),
         ).fetchall()
@@ -723,7 +749,13 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             (chat_id, now - 30 * 86400),
         ).fetchone()["c"]
         verified = conn.execute(
-            "SELECT COUNT(*) c FROM members WHERE chat_id=? AND verified=1", (chat_id,)
+            """
+            SELECT COUNT(DISTINCT m.user_id) AS c
+            FROM members m
+            LEFT JOIN verified_users v ON v.user_id=m.user_id
+            WHERE m.chat_id=? AND COALESCE(v.verified,m.verified,0)=1
+            """,
+            (chat_id,),
         ).fetchone()["c"]
         open_tickets = conn.execute("SELECT COUNT(*) c FROM tickets WHERE status='open'").fetchone()["c"]
         pending = conn.execute("SELECT COUNT(*) c FROM verifications WHERE status='pending'").fetchone()["c"]

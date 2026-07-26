@@ -1,4 +1,4 @@
-# Secret Club Assistant V3.5
+# Secret Club Assistant V3.6
 
 # Secret Club Assistant v3.0.0
 

@@ -47,7 +47,7 @@
 - `/exempt`
 - `/unexempt`
 
-## V3.5 — Manual Verification
+## V3.6 — Manual Verification
 
 Admin-only commands:
 
