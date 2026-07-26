@@ -78,6 +78,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
+from v3_features import initialize_v3, register_v3_handlers, v3_menu_rows
+
 logger = logging.getLogger("secret-club-assistant")
 
 # Πρόχειρη μνήμη για flood/repeated messages.
@@ -469,6 +471,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("❓ Συχνές ερωτήσεις", callback_data="page:faq")],
     ]
+    rows.extend(v3_menu_rows())
 
     links = []
     if ADMIN_USERNAME:
@@ -1407,17 +1410,19 @@ async def post_init(application: Application) -> None:
         [
             ("start", "Άνοιγμα του Secret Club Assistant"),
             ("menu", "Επιστροφή στο κεντρικό μενού"),
+            ("presentation", "Δημιουργία παρουσίασης"),
+            ("verify", "Αίτηση verification"),
+            ("ticket", "Νέο ticket"),
+            ("report", "Αναφορά μέλους"),
+            ("ask", "Βοηθός Secret Club"),
+            ("rank", "Η κατάταξή μου"),
+            ("top", "Top δραστηριότητας"),
             ("adminhelp", "Εντολές διαχειριστών"),
             ("botstatus", "Κατάσταση και ρυθμίσεις bot"),
         ]
     )
 
-    if application.job_queue:
-        application.job_queue.run_daily(
-            scheduled_inactive_check,
-            time=datetime.strptime("04:00", "%H:%M").time(),
-            name="inactive-check",
-        )
+    # Η v3 διαχειρίζεται το inactivity με ασφαλή έλεγχο δύο σταδίων.
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1429,6 +1434,7 @@ def run() -> None:
         raise RuntimeError("Λείπει η μεταβλητή BOT_TOKEN στο Railway.")
 
     init_db()
+    initialize_v3()
 
     application = (
         Application.builder()
@@ -1436,6 +1442,9 @@ def run() -> None:
         .post_init(post_init)
         .build()
     )
+
+    # V3 handlers μπαίνουν πρώτα, πριν από το γενικό callback της v2.
+    register_v3_handlers(application)
 
     # Ιδιωτικό menu / inline buttons
     application.add_handler(CommandHandler("start", start))
@@ -1484,7 +1493,7 @@ def run() -> None:
 
     application.add_error_handler(error_handler)
 
-    logger.info("Secret Club Assistant v2 starting")
+    logger.info("Secret Club Assistant v3 starting")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=False,
