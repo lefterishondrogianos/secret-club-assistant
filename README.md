@@ -1,80 +1,163 @@
-# Secret Club Assistant
+# Secret Club Assistant v2
 
-Έτοιμο Telegram bot με πατήσιμα κουμπιά για:
+Πλήρες Telegram bot διαχείρισης με:
 
-- Κανόνες
-- Tags και περιοχές
-- Πρότυπα Couple / Single / Bi Couple / Bi Single / Lesbian / Gay
-- Ασφάλεια
-- Αναφορά μέλους
-- Συχνές ερωτήσεις
-- Επικοινωνία με Admin
+- ιδιωτικό μενού με κουμπιά
+- welcome νέων μελών
+- υποχρεωτική αποδοχή κανόνων
+- προσωρινό mute μέχρι την αποδοχή
+- καταγραφή δραστηριότητας
+- anti-links
+- anti-flood
+- anti-repeat
+- απαγορευμένες λέξεις
+- warnings
+- mute / unmute
+- kick / ban
+- purge μηνυμάτων
+- join requests
+- inactive member report και προαιρετικό auto-kick
+- admin logs
+- SQLite βάση δεδομένων
 
-## Ανέβασμα στο GitHub από κινητό
+## Σημαντικός περιορισμός για inactive users
 
-1. Άνοιξε το repository `secret-club-assistant`.
-2. Πάτησε **Add file** → **Upload files**.
-3. Ανέβασε όλα τα αρχεία του ZIP, όχι τον ίδιο τον φάκελο.
-4. Πάτησε **Commit changes**.
+Το Telegram Bot API δεν δίνει στο bot πλήρη λίστα όλων των μελών ούτε το ιστορικό της
+τελευταίας δραστηριότητάς τους. Το bot μπορεί να ελέγχει αδράνεια μόνο για μέλη που έχει
+δει να μπαίνουν ή να στέλνουν μήνυμα από τη στιγμή που εγκαταστάθηκε.
 
-Τα βασικά αρχεία που πρέπει να φαίνονται στην αρχική σελίδα του repository είναι:
+Το auto-kick είναι σκόπιμα απενεργοποιημένο αρχικά.
+
+## Αντικατάσταση αρχείων στο GitHub
+
+Στο υπάρχον repository αντικατάστησε:
 
 - `bot.py`
 - `requirements.txt`
 - `Dockerfile`
 - `railway.json`
+- `README.md`
 
-Μην ανεβάσεις ποτέ το token στο GitHub.
+Μπορείς επίσης να ανεβάσεις το `.env.example`, αλλά δεν είναι υποχρεωτικό.
 
-## Σύνδεση με Railway
+## Railway Variables
 
-1. Άνοιξε Railway και επίλεξε **New Project**.
-2. Επίλεξε **Deploy from GitHub Repo**.
-3. Διάλεξε το repository `secret-club-assistant`.
-4. Στις **Variables** πρόσθεσε:
-
-### Υποχρεωτική μεταβλητή
+Κράτησε οπωσδήποτε:
 
 `BOT_TOKEN`
 
-Τιμή: το token που έδωσε ο BotFather.
+Πρόσθεσε προαιρετικά:
 
-### Προαιρετικές μεταβλητές
+`ADMIN_USERNAME` — χωρίς @
 
-`ADMIN_USERNAME`
+`GROUP_URL` — invite link ιδιωτικού group, μόνο αν θέλεις κουμπί
 
-Τιμή: το username του admin χωρίς `@`.
+`LOG_CHAT_ID` — αριθμητικό chat ID για admin logs
 
-Παράδειγμα:
+### Welcome και αποδοχή κανόνων
 
-`myusername`
+`WELCOME_ENABLED=true`
 
-`GROUP_URL`
+`RULES_GATE_ENABLED=true`
 
-Τιμή: ολόκληρο το link της ομάδας.
+Το bot κάνει προσωρινό mute στο νέο μέλος μέχρι να πατήσει «Αποδέχομαι».
 
-Παράδειγμα:
+### Anti-spam
 
-`https://t.me/secretclubexample`
+`ANTI_LINKS=true`
 
-5. Κάνε Deploy ή Redeploy.
-6. Όταν το deployment γίνει επιτυχές, άνοιξε το bot στο Telegram και πάτησε `/start`.
+`ANTI_SPAM=true`
 
-## Ασφάλεια token
+`SPAM_MAX_MESSAGES=6`
 
-Το token είναι κωδικός πλήρους ελέγχου του bot.
+`SPAM_WINDOW_SECONDS=10`
 
-- Μην το βάλεις στο `bot.py`.
-- Μην το ανεβάσεις στο GitHub.
-- Μην το στείλεις σε group ή screenshot.
-- Αν διαρρεύσει, πήγαινε στον BotFather και κάνε revoke/regenerate.
+`REPEAT_MAX=3`
 
-## Αλλαγή κειμένων
+### Inactive users
 
-Άνοιξε το `bot.py` στο GitHub και πάτησε το μολύβι.
+Αρχικά βάλε:
 
-- Το αρχικό κείμενο βρίσκεται στο `WELCOME_TEXT`.
-- Οι σελίδες βρίσκονται στο `PAGES`.
-- Τα κουμπιά βρίσκονται στη συνάρτηση `main_keyboard()`.
+`INACTIVE_CHECK_ENABLED=false`
 
-Μετά πάτησε **Commit changes**. Το Railway συνήθως κάνει αυτόματο redeploy.
+`INACTIVE_AUTO_KICK=false`
+
+Δες πρώτα τη λίστα με:
+
+`/inactive`
+
+Και τρέξε χειροκίνητα έλεγχο με:
+
+`/inactive_run`
+
+Όταν καταλάβεις πώς λειτουργεί, μπορείς να ενεργοποιήσεις:
+
+`INACTIVE_CHECK_ENABLED=true`
+
+`INACTIVE_DAYS=90`
+
+`INACTIVE_WARNING_DAYS=7`
+
+Για προειδοποιήσεις χωρίς διαγραφή:
+
+`INACTIVE_AUTO_KICK=false`
+
+Για αυτόματη αφαίρεση:
+
+`INACTIVE_AUTO_KICK=true`
+
+## Δικαιώματα admin του bot
+
+Στο Telegram group, κάνε το bot administrator και δώσε του:
+
+- Delete messages
+- Ban users
+- Restrict members
+- Invite users / Manage join requests
+- Pin messages, μόνο αν το χρειαστείς
+
+## Privacy Mode
+
+Για να βλέπει όλα τα μηνύματα και να καταγράφει δραστηριότητα:
+
+1. Άνοιξε `@BotFather`
+2. `/mybots`
+3. επίλεξε το bot
+4. **Bot Settings**
+5. **Group Privacy**
+6. **Turn off**
+
+Εναλλακτικά, ως admin το bot λαμβάνει τα μηνύματα της ομάδας, αλλά προτείνεται να
+επιβεβαιώσεις ότι το Privacy Mode είναι κλειστό για συνεπή activity tracking.
+
+## Admin commands
+
+Οι περισσότερες moderation εντολές γίνονται ως reply στο μήνυμα του μέλους:
+
+- `/warn [λόγος]`
+- `/clearwarns`
+- `/mute [λεπτά]`
+- `/unmute`
+- `/kick [λόγος]`
+- `/ban [λόγος]`
+- `/exempt`
+- `/unexempt`
+- `/purge`
+- `/blockword λέξη`
+- `/unblockword λέξη`
+- `/words`
+- `/inactive`
+- `/inactive_run`
+- `/botstatus`
+- `/adminhelp`
+
+## Ασφαλής σειρά ενεργοποίησης
+
+1. Ανέβασε το v2.
+2. Βεβαιώσου ότι γίνεται successful deploy.
+3. Κάνε το bot admin.
+4. Κλείσε το Privacy Mode.
+5. Δοκίμασε το welcome με ένα δοκιμαστικό μέλος.
+6. Δοκίμασε `/warn`, `/mute`, `/unmute`.
+7. Άφησε το inactive auto-kick κλειστό για τουλάχιστον μερικές εβδομάδες.
+8. Μόνο όταν είσαι βέβαιος ότι όλα λειτουργούν, αφαίρεσε τη Rose.
