@@ -18,7 +18,7 @@ from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-VERSION: Final[str] = "3.0.0"
+VERSION: Final[str] = "3.5.0"
 DATABASE_PATH: Final[str] = os.getenv("DATABASE_PATH", "/data/secret_club.db")
 ENV_MAIN_GROUP_ID: Final[int] = int(os.getenv("MAIN_GROUP_ID", "0") or 0)
 ENV_ADMIN_CHAT_ID: Final[int] = int(os.getenv("ADMIN_CHAT_ID", "0") or 0)
@@ -175,7 +175,18 @@ def initialize_v3() -> None:
             CREATE TABLE IF NOT EXISTS verified_users (
                 user_id INTEGER PRIMARY KEY,
                 verified INTEGER NOT NULL DEFAULT 1,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                updated_by INTEGER,
+                source TEXT
+            );
+            CREATE TABLE IF NOT EXISTS verification_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                actor_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_v3_tickets_status ON tickets(status);
             CREATE INDEX IF NOT EXISTS idx_v3_verifications_status ON verifications(status);
@@ -188,6 +199,8 @@ def initialize_v3() -> None:
         _ensure_column(conn, "members", "level", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(conn, "members", "message_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "members", "last_xp_at", "INTEGER")
+        _ensure_column(conn, "verified_users", "updated_by", "INTEGER")
+        _ensure_column(conn, "verified_users", "source", "TEXT")
 
 
 def get_setting(scope_id: int, key: str) -> Optional[str]:
@@ -290,16 +303,236 @@ def is_verified(user_id: int) -> bool:
     return bool(row and row["verified"])
 
 
-def set_verified(user_id: int, value: bool) -> None:
+def set_verified(
+    user_id: int,
+    value: bool,
+    *,
+    actor_id: Optional[int] = None,
+    source: str = "system",
+    chat_id: int = 0,
+) -> None:
+    now = int(time.time())
     with db_connect() as conn:
         conn.execute(
             """
-            INSERT INTO verified_users(user_id,verified,updated_at) VALUES(?,?,?)
-            ON CONFLICT(user_id) DO UPDATE SET verified=excluded.verified,updated_at=excluded.updated_at
+            INSERT INTO verified_users(user_id,verified,updated_at,updated_by,source)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                verified=excluded.verified,
+                updated_at=excluded.updated_at,
+                updated_by=excluded.updated_by,
+                source=excluded.source
             """,
-            (user_id, int(value), int(time.time())),
+            (user_id, int(value), now, actor_id, source),
         )
         conn.execute("UPDATE members SET verified = ? WHERE user_id = ?", (int(value), user_id))
+        if actor_id is not None:
+            conn.execute(
+                """
+                INSERT INTO verification_audit(chat_id,actor_id,target_id,action,source,created_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (chat_id, actor_id, user_id, "verify" if value else "unverify", source, now),
+            )
+
+
+def _manual_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    message = update.effective_message
+    if message and message.reply_to_message and message.reply_to_message.from_user:
+        user = message.reply_to_message.from_user
+        return user.id, user.username, user.first_name
+    if context.args and context.args[0].lstrip("-").isdigit():
+        user_id = int(context.args[0])
+        with db_connect() as conn:
+            row = conn.execute(
+                """
+                SELECT username, first_name FROM members
+                WHERE user_id=? ORDER BY last_active DESC LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        return user_id, (row["username"] if row else None), (row["first_name"] if row else None)
+    return None, None, None
+
+
+async def _manual_verify_change(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, value: bool, *, toggle: bool = False
+) -> None:
+    if not await require_admin(update, context):
+        return
+    target_id, username, first_name = _manual_target(update, context)
+    if target_id is None:
+        await update.effective_message.reply_text(
+            "Κάνε reply σε μήνυμα μέλους ή γράψε την εντολή με Telegram ID."
+        )
+        return
+    if target_id == context.bot.id:
+        await update.effective_message.reply_text("❌ Δεν γίνεται verification στο ίδιο το bot.")
+        return
+    current = is_verified(target_id)
+    new_value = (not current) if toggle else value
+    actor_id = update.effective_user.id
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    set_verified(
+        target_id, new_value, actor_id=actor_id, source="manual", chat_id=chat_id
+    )
+    label = format_user(target_id, username, first_name)
+    status = "επαληθεύτηκε" if new_value else "δεν είναι πλέον επαληθευμένο"
+    await update.effective_message.reply_text(
+        f"{'✅' if new_value else '❌'} Το μέλος {label} {status}.",
+        parse_mode=ParseMode.HTML,
+    )
+    await admin_log(
+        context,
+        f"🛡️ <b>MANUAL VERIFICATION</b>\nAdmin: {update.effective_user.mention_html()}\n"
+        f"Μέλος: {label}\nΚατάσταση: <b>{'VERIFIED' if new_value else 'UNVERIFIED'}</b>",
+    )
+
+
+async def verify_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _manual_verify_change(update, context, True)
+
+
+async def unverify_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _manual_verify_change(update, context, False)
+
+
+async def toggle_verify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _manual_verify_change(update, context, True, toggle=True)
+
+
+async def is_verified_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_admin(update, context):
+        return
+    target_id, username, first_name = _manual_target(update, context)
+    if target_id is None:
+        await update.effective_message.reply_text(
+            "Κάνε reply σε μήνυμα μέλους ή γράψε /isverified Telegram_ID."
+        )
+        return
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT verified,updated_at,updated_by,source FROM verified_users WHERE user_id=?",
+            (target_id,),
+        ).fetchone()
+    status = is_verified(target_id)
+    label = format_user(target_id, username, first_name)
+    lines = [f"{'✅' if status else '❌'} {label}: <b>{'VERIFIED' if status else 'UNVERIFIED'}</b>"]
+    if row:
+        when = datetime.fromtimestamp(int(row["updated_at"]), LOCAL_TZ).strftime("%d/%m/%Y %H:%M")
+        lines.append(f"Τελευταία αλλαγή: <b>{when}</b>")
+        if row["updated_by"]:
+            lines.append(f"Admin ID: <code>{int(row['updated_by'])}</code>")
+        if row["source"]:
+            lines.append(f"Τρόπος: <code>{html.escape(str(row['source']))}</code>")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def verify_all_known(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_admin(update, context):
+        return
+    chat_id = update.effective_chat.id
+    actor_id = update.effective_user.id
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM members WHERE chat_id=?", (chat_id,)
+        ).fetchall()
+    changed = 0
+    skipped = 0
+    for row in rows:
+        user_id = int(row["user_id"])
+        if user_id == context.bot.id:
+            skipped += 1
+            continue
+        if not is_verified(user_id):
+            set_verified(user_id, True, actor_id=actor_id, source="verifyallknown", chat_id=chat_id)
+            changed += 1
+        else:
+            skipped += 1
+    await update.effective_message.reply_text(
+        f"✅ Μαζικό verification ολοκληρώθηκε.\nΝέα verified: <b>{changed}</b>\nΉδη verified/παραλείφθηκαν: <b>{skipped}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+    await admin_log(context, f"✅ <b>VERIFY ALL KNOWN</b>\nAdmin: {update.effective_user.mention_html()}\nΟμάδα: <code>{chat_id}</code>\nΝέα verified: <b>{changed}</b>")
+
+
+async def unverify_all_known(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_admin(update, context):
+        return
+    if not context.args or context.args[0].upper() != "CONFIRM":
+        await update.effective_message.reply_text(
+            "⚠️ Αυτό αφαιρεί το verification από όλα τα γνωστά μέλη της ομάδας.\n"
+            "Για επιβεβαίωση γράψε: <code>/unverifyallknown CONFIRM</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    chat_id = update.effective_chat.id
+    actor_id = update.effective_user.id
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM members WHERE chat_id=?", (chat_id,)
+        ).fetchall()
+    changed = 0
+    for row in rows:
+        user_id = int(row["user_id"])
+        if is_verified(user_id):
+            set_verified(user_id, False, actor_id=actor_id, source="unverifyallknown", chat_id=chat_id)
+            changed += 1
+    await update.effective_message.reply_text(f"❌ Αφαιρέθηκε το verification από <b>{changed}</b> μέλη.", parse_mode=ParseMode.HTML)
+    await admin_log(context, f"❌ <b>UNVERIFY ALL KNOWN</b>\nAdmin: {update.effective_user.mention_html()}\nΟμάδα: <code>{chat_id}</code>\nΑλλαγές: <b>{changed}</b>")
+
+
+async def verify_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_admin(update, context):
+        return
+    chat_id = update.effective_chat.id
+    with db_connect() as conn:
+        total = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM members WHERE chat_id=?", (chat_id,)).fetchone()["c"])
+        verified = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM members WHERE chat_id=? AND verified=1", (chat_id,)).fetchone()["c"])
+        pending = int(conn.execute("SELECT COUNT(*) c FROM verifications WHERE status='pending'").fetchone()["c"])
+    await update.effective_message.reply_text(
+        f"📊 <b>VERIFICATION STATS</b>\n\nΓνωστά μέλη: <b>{total}</b>\nVerified: <b>{verified}</b>\nUnverified: <b>{max(0,total-verified)}</b>\nPending αιτήσεις: <b>{pending}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def _verification_list(update: Update, context: ContextTypes.DEFAULT_TYPE, value: bool) -> None:
+    if not await require_admin(update, context):
+        return
+    chat_id = update.effective_chat.id
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT user_id,username,first_name,last_active FROM members
+            WHERE chat_id=? AND verified=? ORDER BY COALESCE(last_active,0) DESC LIMIT 100
+            """,
+            (chat_id, int(value)),
+        ).fetchall()
+    if not rows:
+        await update.effective_message.reply_text("Δεν βρέθηκαν μέλη σε αυτή την κατηγορία.")
+        return
+    title = "✅ VERIFIED MEMBERS" if value else "❌ UNVERIFIED MEMBERS"
+    lines = [f"<b>{title}</b> (έως 100)"]
+    for i, row in enumerate(rows, 1):
+        lines.append(f"{i}. {format_user(int(row['user_id']), row['username'], row['first_name'])} — <code>{int(row['user_id'])}</code>")
+    chunks=[]
+    current=[]
+    length=0
+    for line in lines:
+        if length + len(line) + 1 > 3800 and current:
+            chunks.append("\n".join(current)); current=[]; length=0
+        current.append(line); length += len(line)+1
+    if current: chunks.append("\n".join(current))
+    for chunk in chunks:
+        await update.effective_message.reply_text(chunk, parse_mode=ParseMode.HTML)
+
+
+async def verified_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _verification_list(update, context, True)
+
+
+async def unverified_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _verification_list(update, context, False)
 
 
 def level_from_xp(xp: int) -> int:
@@ -797,6 +1030,17 @@ async def v3_adminhelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /inactive
 /inactive_run
 
+<b>Manual verification</b>
+/verifyuser [ID] ή reply
+/unverifyuser [ID] ή reply
+/toggleverify [ID] ή reply
+/isverified [ID] ή reply
+/verifyallknown
+/unverifyallknown CONFIRM
+/verifiedlist
+/unverifiedlist
+/verifystats
+
 Τα moderation commands της v2 παραμένουν κανονικά.
 """.strip(),
         parse_mode=ParseMode.HTML,
@@ -819,6 +1063,15 @@ def register_core_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("inactive", inactive_list), group=-2)
     application.add_handler(CommandHandler("inactive_run", inactive_run), group=-2)
     application.add_handler(CommandHandler("v3help", v3_adminhelp), group=-2)
+    application.add_handler(CommandHandler(["verifyuser", "verifyid"], verify_user), group=-2)
+    application.add_handler(CommandHandler(["unverifyuser", "unverifyid"], unverify_user), group=-2)
+    application.add_handler(CommandHandler("toggleverify", toggle_verify), group=-2)
+    application.add_handler(CommandHandler("isverified", is_verified_command), group=-2)
+    application.add_handler(CommandHandler("verifyallknown", verify_all_known), group=-2)
+    application.add_handler(CommandHandler("unverifyallknown", unverify_all_known), group=-2)
+    application.add_handler(CommandHandler("verifiedlist", verified_list), group=-2)
+    application.add_handler(CommandHandler("unverifiedlist", unverified_list), group=-2)
+    application.add_handler(CommandHandler("verifystats", verify_stats), group=-2)
     application.add_handler(
         MessageHandler(filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL & ~filters.COMMAND, smart_scam_filter),
         group=9,
