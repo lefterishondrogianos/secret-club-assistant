@@ -778,9 +778,10 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     source = message.reply_to_message
     kind = ""
     file_id = ""
+    # Το κείμενο της εντολής έχει προτεραιότητα. Έτσι μπορείς να κάνεις
+    # reply σε φωτογραφία και να γράψεις /setwelcome <δικό σου κείμενο>.
     text = arg
     if source:
-        text = source.caption_html or source.text_html or source.caption or source.text or DEFAULT_WELCOME_TEXT
         if source.photo:
             kind, file_id = "photo", source.photo[-1].file_id
         elif source.video:
@@ -791,14 +792,45 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             kind, file_id = "document", source.document.file_id
         elif source.text:
             kind = "text"
+
+        if not text:
+            # Αν το αρχείο έχει caption, χρησιμοποίησέ το. Διαφορετικά κράτα
+            # το ήδη αποθηκευμένο κείμενο αντί να το αντικαταστήσεις.
+            text = source.caption or source.text or _welcome_value(
+                chat.id, "text", DEFAULT_WELCOME_TEXT
+            )
     elif text:
-        kind = "text"
+        # Αλλαγή μόνο του κειμένου, χωρίς να χάνεται η υπάρχουσα φωτογραφία.
+        current_kind = _welcome_value(chat.id, "type", "text")
+        current_file = _welcome_value(chat.id, "file_id")
+        if current_kind != "text" and current_file:
+            kind, file_id = current_kind, current_file
+        else:
+            kind = "text"
+
+    # Τα κείμενα που γράφει ο admin αντιμετωπίζονται ως απλό κείμενο για
+    # να μην αποτυγχάνει το Telegram από σύμβολα όπως & ή <. Τα placeholders
+    # παραμένουν λειτουργικά και αντικαθίστανται αργότερα.
+    if text and text != DEFAULT_WELCOME_TEXT:
+        placeholders = {
+            "{mention}": "__PH_MENTION__",
+            "{first_name}": "__PH_FIRST__",
+            "{username}": "__PH_USERNAME__",
+            "{user_id}": "__PH_USERID__",
+            "{group}": "__PH_GROUP__",
+        }
+        for token, marker in placeholders.items():
+            text = text.replace(token, marker)
+        text = html.escape(text)
+        for token, marker in placeholders.items():
+            text = text.replace(marker, token)
 
     if not kind:
         await message.reply_text(
             "Χρήση:\n"
             "• /setwelcome Το μήνυμά σου\n"
-            "• reply σε φωτογραφία με /setwelcome για banner + caption\n"
+            "• reply σε φωτογραφία με /setwelcome Το κείμενό σου\n"
+            "• /setwelcome Το κείμενό σου (κρατά την ήδη αποθηκευμένη φωτογραφία)\n"
             "• /setwelcome autodelete 60 | autodelete off\n"
             "• /setwelcome preview | status | on | off | reset\n\n"
             "Τα κουμπιά Κανόνες, Verification, FAQ και Admin προστίθενται αυτόματα.\n"
@@ -848,8 +880,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     if not query:
         return
-    await query.answer()
-
     data = query.data or ""
 
     if data.startswith("welcome:"):
@@ -876,6 +906,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not await is_admin(context, chat_id, query.from_user.id):
             await query.answer("Μόνο admins.", show_alert=True)
             return
+        await query.answer()
         action = data.split(":", 1)[1]
         if action == "close":
             await query.message.delete()
@@ -918,6 +949,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if data == "menu":
+        await query.answer()
         await query.edit_message_text(
             WELCOME_TEXT,
             parse_mode=ParseMode.HTML,
@@ -927,6 +959,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if data.startswith("page:"):
+        await query.answer()
         page = data.split(":", 1)[1]
         text = PAGES.get(page, "Δεν βρέθηκε αυτή η επιλογή.")
         rows = []
@@ -958,6 +991,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
+        await query.answer("✅ Οι κανόνες έγιναν αποδεκτοί.")
         set_rules_accepted(chat_id, expected_user_id, True)
         try:
             await unrestrict_user(context, chat_id, expected_user_id)
