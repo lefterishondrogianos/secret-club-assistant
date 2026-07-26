@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import os
 import re
@@ -252,6 +253,34 @@ def remove_blocked_word(chat_id: int, word: str) -> None:
         conn.execute(
             "DELETE FROM blocked_words WHERE chat_id = ? AND word = ?",
             (chat_id, word.lower()),
+        )
+
+
+def get_setting(chat_id: int, key: str) -> Optional[str]:
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE chat_id = ? AND key = ?",
+            (chat_id, key),
+        ).fetchone()
+    return str(row["value"]) if row else None
+
+
+def set_setting(chat_id: int, key: str, value: str) -> None:
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings(chat_id, key, value) VALUES (?, ?, ?)
+            ON CONFLICT(chat_id, key) DO UPDATE SET value = excluded.value
+            """,
+            (chat_id, key, value),
+        )
+
+
+def delete_setting(chat_id: int, key: str) -> None:
+    with db_connect() as conn:
+        conn.execute(
+            "DELETE FROM settings WHERE chat_id = ? AND key = ?",
+            (chat_id, key),
         )
 
 
@@ -603,6 +632,130 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await start(update, context)
 
 
+def _welcome_value(chat_id: int, key: str, default: str = "") -> str:
+    value = get_setting(chat_id, f"welcome_{key}")
+    return default if value is None else value
+
+
+def _render_welcome(text: str, user, chat) -> str:
+    values = {
+        "mention": user.mention_html(),
+        "first_name": html.escape(user.first_name or "μέλος"),
+        "username": html.escape(f"@{user.username}" if user.username else "χωρίς username"),
+        "user_id": str(user.id),
+        "group": html.escape(chat.title or "την ομάδα"),
+    }
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", value)
+    return text
+
+
+async def _send_custom_welcome(context: ContextTypes.DEFAULT_TYPE, chat, user) -> bool:
+    if _welcome_value(chat.id, "enabled", "1") != "1":
+        return False
+    kind = _welcome_value(chat.id, "type")
+    if not kind:
+        return False
+    text = _render_welcome(_welcome_value(chat.id, "text"), user, chat)
+    file_id = _welcome_value(chat.id, "file_id")
+    kwargs = {"chat_id": chat.id, "parse_mode": ParseMode.HTML}
+    if kind == "text":
+        await context.bot.send_message(text=text, **kwargs)
+    elif kind == "photo":
+        await context.bot.send_photo(photo=file_id, caption=text or None, **kwargs)
+    elif kind == "video":
+        await context.bot.send_video(video=file_id, caption=text or None, **kwargs)
+    elif kind == "animation":
+        await context.bot.send_animation(animation=file_id, caption=text or None, **kwargs)
+    elif kind == "document":
+        await context.bot.send_document(document=file_id, caption=text or None, **kwargs)
+    else:
+        return False
+    return True
+
+
+async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    actor = update.effective_user
+    if not message or not chat or chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if message:
+            await message.reply_text("Η /setwelcome χρησιμοποιείται μέσα στην ομάδα.")
+        return
+    if not await is_admin(context, chat.id, actor.id):
+        await reply_admin_only(update)
+        return
+
+    arg = " ".join(context.args).strip()
+    command = arg.lower()
+    if command in {"off", "disable"}:
+        set_setting(chat.id, "welcome_enabled", "0")
+        await message.reply_text("🔕 Το προσαρμοσμένο welcome απενεργοποιήθηκε.")
+        return
+    if command in {"on", "enable"}:
+        set_setting(chat.id, "welcome_enabled", "1")
+        await message.reply_text("🔔 Το προσαρμοσμένο welcome ενεργοποιήθηκε.")
+        return
+    if command in {"reset", "delete", "clear"}:
+        for key in ("enabled", "type", "text", "file_id"):
+            delete_setting(chat.id, f"welcome_{key}")
+        await message.reply_text("♻️ Το welcome επανήλθε στο αρχικό μήνυμα του bot.")
+        return
+    if command == "status":
+        kind = _welcome_value(chat.id, "type", "default")
+        enabled = _welcome_value(chat.id, "enabled", "1") == "1"
+        await message.reply_text(
+            f"👋 Welcome: {'ενεργό' if enabled else 'ανενεργό'}\nΤύπος: {kind}\n"
+            "Placeholders: {mention} {first_name} {username} {user_id} {group}"
+        )
+        return
+    if command == "preview":
+        if not await _send_custom_welcome(context, chat, actor):
+            await message.reply_text("Δεν έχει οριστεί προσαρμοσμένο welcome.")
+        return
+
+    source = message.reply_to_message
+    kind = ""
+    file_id = ""
+    text = arg
+    if source:
+        text = source.caption_html or source.text_html or source.caption or source.text or arg
+        if source.photo:
+            kind, file_id = "photo", source.photo[-1].file_id
+        elif source.video:
+            kind, file_id = "video", source.video.file_id
+        elif source.animation:
+            kind, file_id = "animation", source.animation.file_id
+        elif source.document:
+            kind, file_id = "document", source.document.file_id
+        elif source.text:
+            kind = "text"
+    elif text:
+        kind = "text"
+
+    if not kind:
+        await message.reply_text(
+            "Χρήση:\n"
+            "• /setwelcome Το μήνυμά σου\n"
+            "• reply σε κείμενο/φωτογραφία/video/GIF/αρχείο με /setwelcome\n"
+            "• /setwelcome preview | status | on | off | reset\n\n"
+            "Placeholders: {mention} {first_name} {username} {user_id} {group}"
+        )
+        return
+    if kind != "text" and len(text) > 1000:
+        await message.reply_text("Η λεζάντα πολυμέσου πρέπει να είναι έως 1000 χαρακτήρες.")
+        return
+    if kind == "text" and len(text) > 4000:
+        await message.reply_text("Το μήνυμα welcome πρέπει να είναι έως 4000 χαρακτήρες.")
+        return
+
+    set_setting(chat.id, "welcome_type", kind)
+    set_setting(chat.id, "welcome_text", text)
+    set_setting(chat.id, "welcome_file_id", file_id)
+    set_setting(chat.id, "welcome_enabled", "1")
+    await message.reply_text("✅ Το νέο welcome αποθηκεύτηκε μόνιμα. Γράψε /setwelcome preview για δοκιμή.")
+
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
@@ -690,15 +843,21 @@ async def welcome_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
         mention = user.mention_html()
+        custom_sent = False
+        try:
+            custom_sent = await _send_custom_welcome(context, chat, user)
+        except TelegramError:
+            logger.exception("Δεν μπόρεσα να στείλω το προσαρμοσμένο welcome")
+
         if RULES_GATE_ENABLED:
             try:
                 await restrict_user(context, chat.id, user.id, minutes=24 * 60)
             except TelegramError:
                 logger.exception("Δεν μπόρεσα να περιορίσω νέο μέλος")
 
+            prefix = "" if custom_sent else f"👋 Καλώς ήρθες {mention} στο 🖤 <b>Secret Club</b>!\n\n"
             text = (
-                f"👋 Καλώς ήρθες {mention} στο 🖤 <b>Secret Club</b>!\n\n"
-                f"{RULES_TEXT}\n\n"
+                f"{prefix}{RULES_TEXT}\n\n"
                 "Πάτησε το κουμπί για να αποδεχτείς τους κανόνες και να γράψεις στην ομάδα."
             )
             await message.reply_text(
@@ -706,7 +865,7 @@ async def welcome_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode=ParseMode.HTML,
                 reply_markup=rules_accept_keyboard(chat.id, user.id),
             )
-        elif WELCOME_ENABLED:
+        elif WELCOME_ENABLED and not custom_sent:
             await message.reply_text(
                 f"👋 Καλώς ήρθες {mention} στο 🖤 <b>Secret Club</b>!\n\n"
                 "Άνοιξε το Secret Club Assistant σε προσωπικό μήνυμα για οδηγίες.",
@@ -1454,6 +1613,7 @@ def run() -> None:
     # Admin commands
     application.add_handler(CommandHandler("adminhelp", admin_help))
     application.add_handler(CommandHandler("botstatus", bot_status))
+    application.add_handler(CommandHandler("setwelcome", setwelcome_command))
     application.add_handler(CommandHandler("warn", warn_command))
     application.add_handler(CommandHandler("clearwarns", unwarn_command))
     application.add_handler(CommandHandler("mute", mute_command))

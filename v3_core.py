@@ -199,8 +199,23 @@ def initialize_v3() -> None:
         _ensure_column(conn, "members", "level", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(conn, "members", "message_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "members", "last_xp_at", "INTEGER")
+        _ensure_column(conn, "verified_users", "verified", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(conn, "verified_users", "updated_at", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "verified_users", "updated_by", "INTEGER")
         _ensure_column(conn, "verified_users", "source", "TEXT")
+
+        # One-way, non-destructive migration of every legacy verified member.
+        # INSERT OR IGNORE never overwrites a newer explicit verify/unverify decision.
+        now = int(time.time())
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO verified_users(user_id, verified, updated_at, updated_by, source)
+            SELECT DISTINCT user_id, 1, ?, NULL, 'legacy_members_migration'
+            FROM members
+            WHERE COALESCE(verified, 0) = 1
+            """,
+            (now,),
+        )
 
 
 def get_setting(scope_id: int, key: str) -> Optional[str]:
@@ -1072,6 +1087,7 @@ async def v3_adminhelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /verifiedlist
 /unverifiedlist
 /verifystats
+/setwelcome (στην ομάδα)
 
 Τα moderation commands της v2 παραμένουν κανονικά.
 """.strip(),

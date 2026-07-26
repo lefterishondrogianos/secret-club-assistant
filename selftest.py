@@ -97,6 +97,7 @@ def migration_test() -> None:
                     first_name TEXT,
                     joined_at INTEGER,
                     last_active INTEGER,
+                    verified INTEGER NOT NULL DEFAULT 0,
                     rules_accepted INTEGER NOT NULL DEFAULT 0,
                     warnings INTEGER NOT NULL DEFAULT 0,
                     inactive_warned_at INTEGER,
@@ -104,6 +105,10 @@ def migration_test() -> None:
                     PRIMARY KEY(chat_id, user_id)
                 )
                 """
+            )
+            conn.execute(
+                "INSERT INTO members(chat_id,user_id,username,first_name,verified) VALUES(?,?,?,?,?)",
+                (-100123, 424242, "legacy", "Legacy", 1),
             )
 
         core = importlib.import_module("v3_core")
@@ -127,6 +132,11 @@ def migration_test() -> None:
             for column in ("verified", "xp", "level", "message_count", "last_xp_at"):
                 if column not in columns:
                     raise AssertionError(f"Missing members column: {column}")
+            migrated = conn.execute(
+                "SELECT verified, source FROM verified_users WHERE user_id=?", (424242,)
+            ).fetchone()
+            if not migrated or migrated[0] != 1 or migrated[1] != "legacy_members_migration":
+                raise AssertionError("Legacy verification was not migrated safely")
 
         assert core.level_from_xp(0) == 1
         assert core.level_from_xp(80) >= 3
