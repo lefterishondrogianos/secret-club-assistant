@@ -924,6 +924,7 @@ def panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👋 Welcome", callback_data="panel:welcome"), InlineKeyboardButton("✅ Verification", callback_data="panel:verification")],
         [InlineKeyboardButton("👥 Members", callback_data="panel:members"), InlineKeyboardButton("📢 Broadcast", callback_data="panel:broadcast")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="panel:settings"), InlineKeyboardButton("📊 Statistics", callback_data="panel:stats")],
+        [InlineKeyboardButton("🤖 Bot Status", callback_data="panel:status")],
         [InlineKeyboardButton("❌ Κλείσιμο", callback_data="panel:close")],
     ])
 
@@ -981,7 +982,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.edit_message_text("🛡️ <b>SECRET CLUB ADMIN PANEL</b>\n\nΕπίλεξε λειτουργία:", parse_mode=ParseMode.HTML, reply_markup=panel_keyboard())
             return
         back = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Πίσω", callback_data="panel:home")]])
-        if action == "welcome":
+        if action == "status":
+            me = await context.bot.get_me()
+            text = (
+                "🤖 <b>BOT STATUS</b>\n\n"
+                f"Bot: <b>@{html.escape(me.username or '')}</b>\n"
+                f"Welcome: <b>{'ON' if _welcome_value(chat_id,'enabled','1') == '1' else 'OFF'}</b>\n"
+                f"Welcome auto-delete: <b>{_welcome_value(chat_id,'autodelete','60')} δευτ.</b>\n"
+                f"Rules gate: <b>{'ON' if RULES_GATE_ENABLED else 'OFF'}</b>\n"
+                f"Anti-links: <b>{'ON' if ANTI_LINKS else 'OFF'}</b>\n"
+                f"Anti-spam: <b>{'ON' if ANTI_SPAM else 'OFF'}</b>\n"
+                f"Inactive check: <b>{'ON' if INACTIVE_CHECK_ENABLED else 'OFF'}</b>\n"
+                f"Inactive days: <b>{INACTIVE_DAYS}</b>\n"
+                f"Auto-kick inactive: <b>{'ON' if INACTIVE_AUTO_KICK else 'OFF'}</b>\n"
+                f"Auto-approve joins: <b>{'ON' if AUTO_APPROVE_JOIN_REQUESTS else 'OFF'}</b>"
+            )
+        elif action == "welcome":
             text = ("👋 <b>WELCOME</b>\n\n"
                     f"Κατάσταση: <b>{'ON' if _welcome_value(chat_id,'enabled','1') == '1' else 'OFF'}</b>\n"
                     f"Auto-delete: <b>{_welcome_value(chat_id,'autodelete','60')} δευτ.</b>\n\n"

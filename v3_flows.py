@@ -77,6 +77,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def _entry_screen(update: Update, text: str, **kwargs):
+    """Show a flow screen without adding another bot message when opened by a button."""
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, **kwargs)
+        return update.callback_query.message
+    message = update.effective_message
+    await message.reply_text(text, **kwargs)
+    return message
+
+
 # -----------------------------------------------------------------------------
 # Verification
 # -----------------------------------------------------------------------------
@@ -88,13 +98,14 @@ async def verify_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if update.callback_query:
         await update.callback_query.answer()
     if not get_admin_chat_id():
-        await sender.reply_text("⚙️ Ένας admin πρέπει πρώτα να τρέξει /setupadminchat στην ιδιωτική ομάδα admins.")
+        await _entry_screen(update, "⚙️ Ένας admin πρέπει πρώτα να τρέξει /setupadminchat στην ιδιωτική ομάδα admins.")
         return ConversationHandler.END
     if is_verified(update.effective_user.id):
-        await sender.reply_text("✅ Είσαι ήδη verified.")
+        await _entry_screen(update, "✅ Είσαι ήδη verified.")
         return ConversationHandler.END
     context.user_data["verify"] = {}
-    await sender.reply_text(
+    await _entry_screen(
+        update,
         "✅ <b>Verification</b>\n\nΕπιβεβαίωσε ότι είσαι 18+. Δεν ζητάμε ταυτότητα, τραπεζικά στοιχεία ή κωδικούς.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([
@@ -207,10 +218,11 @@ async def ticket_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if update.callback_query:
         await update.callback_query.answer()
     if not get_admin_chat_id():
-        await sender.reply_text("⚙️ Το ticket system χρειάζεται πρώτα /setupadminchat.")
+        await _entry_screen(update, "⚙️ Το ticket system χρειάζεται πρώτα /setupadminchat.")
         return ConversationHandler.END
     context.user_data["ticket"] = {}
-    await sender.reply_text(
+    await _entry_screen(
+        update,
         "🎫 <b>Νέο Ticket</b>\n\nΔιάλεξε κατηγορία:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([
@@ -372,10 +384,10 @@ async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if update.callback_query:
         await update.callback_query.answer()
     if not get_admin_chat_id():
-        await sender.reply_text("Το σύστημα αναφορών χρειάζεται πρώτα /setupadminchat.")
+        await _entry_screen(update, "Το σύστημα αναφορών χρειάζεται πρώτα /setupadminchat.")
         return ConversationHandler.END
     context.user_data["report"] = {}
-    await sender.reply_text("🚨 <b>Αναφορά μέλους</b>\n\nΓράψε το @username του μέλους:", parse_mode=ParseMode.HTML)
+    await _entry_screen(update, "🚨 <b>Αναφορά μέλους</b>\n\nΓράψε το @username του μέλους:", parse_mode=ParseMode.HTML)
     return REPORT_USER
 
 
@@ -427,7 +439,8 @@ async def presentation_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if update.callback_query:
         await update.callback_query.answer()
     context.user_data["presentation"] = {}
-    await sender.reply_text(
+    await _entry_screen(
+        update,
         "✨ <b>Δημιουργία παρουσίασης</b>\n\nΔιάλεξε κατηγορία:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup([
@@ -655,14 +668,14 @@ async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.callback_query.answer()
     chat_id = get_main_group_id() or 0
     if not feature_enabled(chat_id, "ai"):
-        await sender.reply_text("Ο βοηθός είναι απενεργοποιημένος.")
+        await _entry_screen(update, "Ο βοηθός είναι απενεργοποιημένος.")
         return ConversationHandler.END
     if context.args:
         question = " ".join(context.args).strip()
         await sender.reply_text("🤖 Επεξεργάζομαι την ερώτηση…")
         await sender.reply_text(await answer_question(question, update.effective_user.id))
         return ConversationHandler.END
-    await sender.reply_text("🤖 Γράψε την ερώτησή σου για το Secret Club, τους κανόνες ή το bot:")
+    await _entry_screen(update, "🤖 Γράψε την ερώτησή σου για το Secret Club, τους κανόνες ή το bot:")
     return AI_QUESTION
 
 
