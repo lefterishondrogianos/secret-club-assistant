@@ -547,6 +547,19 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
         return False
 
 
+def get_configured_main_group_id() -> int:
+    """Return the main group stored by the V3 setup, if any."""
+    value = get_setting(0, "main_group_id")
+    return int(value) if value and value.lstrip("-").isdigit() else 0
+
+
+def ensure_main_group(chat) -> None:
+    """Automatically connect the first admin-managed group as the main group."""
+    if chat and chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if not get_configured_main_group_id():
+            set_setting(0, "main_group_id", str(chat.id))
+
+
 async def reply_admin_only(update: Update) -> None:
     if update.effective_message:
         await update.effective_message.reply_text("⛔ Αυτή η εντολή είναι μόνο για admins.")
@@ -724,6 +737,7 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not await is_admin(context, chat.id, actor.id):
         await reply_admin_only(update)
         return
+    ensure_main_group(chat)
 
     arg = " ".join(context.args).strip()
     command = arg.lower()
@@ -775,7 +789,9 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _send_custom_welcome(context, chat, actor)
         return
 
-    source = message.reply_to_message
+    # Accept either a reply to media OR a photo/video/GIF/document sent directly
+    # with /setwelcome in its caption.
+    source = message.reply_to_message or message
     kind = ""
     file_id = ""
     # Το κείμενο της εντολής έχει προτεραιότητα. Έτσι μπορείς να κάνεις
@@ -790,7 +806,7 @@ async def setwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             kind, file_id = "animation", source.animation.file_id
         elif source.document:
             kind, file_id = "document", source.document.file_id
-        elif source.text:
+        elif source is not message and source.text:
             kind = "text"
 
         if not text:
@@ -858,6 +874,7 @@ def panel_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👋 Welcome", callback_data="panel:welcome"), InlineKeyboardButton("✅ Verification", callback_data="panel:verification")],
         [InlineKeyboardButton("👥 Members", callback_data="panel:members"), InlineKeyboardButton("📢 Broadcast", callback_data="panel:broadcast")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="panel:settings"), InlineKeyboardButton("📊 Statistics", callback_data="panel:stats")],
+        [InlineKeyboardButton("🔗 Κύρια ομάδα", callback_data="panel:setupmain")],
         [InlineKeyboardButton("❌ Κλείσιμο", callback_data="panel:close")],
     ])
 
@@ -873,6 +890,7 @@ async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not await is_admin(context, chat.id, user.id):
         await message.reply_text("❌ Δεν έχεις δικαίωμα πρόσβασης στο Admin Panel.")
         return
+    ensure_main_group(chat)
     await message.reply_text("🛡️ <b>SECRET CLUB ADMIN PANEL</b>\n\nΕπίλεξε λειτουργία:", parse_mode=ParseMode.HTML, reply_markup=panel_keyboard())
 
 
@@ -913,6 +931,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         if action == "home":
             await query.edit_message_text("🛡️ <b>SECRET CLUB ADMIN PANEL</b>\n\nΕπίλεξε λειτουργία:", parse_mode=ParseMode.HTML, reply_markup=panel_keyboard())
+            return
+        if action == "setupmain":
+            set_setting(0, "main_group_id", str(chat_id))
+            await query.edit_message_text(
+                "✅ <b>ΚΥΡΙΑ ΟΜΑΔΑ</b>\n\nΗ συγκεκριμένη ομάδα συνδέθηκε επιτυχώς. "
+                "Τα /rank, /top και οι V3 λειτουργίες θα χρησιμοποιούν αυτή την ομάδα.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Πίσω", callback_data="panel:home")]]),
+            )
             return
         back = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Πίσω", callback_data="panel:home")]])
         if action == "welcome":
@@ -1508,7 +1535,15 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     actor = update.effective_user
     if not chat or not actor:
         return
-    if not await is_admin(context, chat.id, actor.id):
+    admin_chat_id = chat.id
+    if chat.type == ChatType.PRIVATE:
+        admin_chat_id = get_configured_main_group_id()
+        if not admin_chat_id:
+            await update.effective_message.reply_text(
+                "❌ Δεν έχει συνδεθεί κύρια ομάδα. Άνοιξε /panel μέσα στην ομάδα και πάτησε «Κύρια ομάδα»."
+            )
+            return
+    if not await is_admin(context, admin_chat_id, actor.id):
         await reply_admin_only(update)
         return
     await update.effective_message.reply_text(
