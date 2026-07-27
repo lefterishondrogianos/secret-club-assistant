@@ -18,7 +18,7 @@ from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-VERSION: Final[str] = "3.5.0"
+VERSION: Final[str] = "4.0.0"
 DATABASE_PATH: Final[str] = os.getenv("DATABASE_PATH", "/data/secret_club.db")
 ENV_MAIN_GROUP_ID: Final[int] = int(os.getenv("MAIN_GROUP_ID", "0") or 0)
 ENV_ADMIN_CHAT_ID: Final[int] = int(os.getenv("ADMIN_CHAT_ID", "0") or 0)
@@ -251,6 +251,16 @@ def get_admin_chat_id() -> int:
     return int(value) if value and value.lstrip("-").isdigit() else 0
 
 
+def management_target_chat_id(update: Update) -> int:
+    """Return the main group when an admin command runs in the control chat."""
+    current_id = update.effective_chat.id if update.effective_chat else 0
+    main_id = get_main_group_id()
+    admin_id = get_admin_chat_id()
+    if main_id and admin_id and current_id == admin_id:
+        return main_id
+    return current_id or main_id
+
+
 def feature_enabled(chat_id: int, feature: str) -> bool:
     value = get_setting(chat_id, f"feature:{feature}")
     if value is None:
@@ -261,11 +271,26 @@ def feature_enabled(chat_id: int, feature: str) -> bool:
 async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
     if user_id in ADMIN_USER_IDS:
         return True
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        return member.status in {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER}
-    except TelegramError:
-        return False
+
+    chat_ids: list[int] = []
+    if chat_id:
+        chat_ids.append(chat_id)
+    admin_chat_id = get_admin_chat_id()
+    main_group_id = get_main_group_id()
+    # Στο ξεχωριστό admin chat αποδεχόμαστε admins είτε του admin chat
+    # είτε της κύριας ομάδας. Έτσι όλοι οι πραγματικοί admins μπορούν να
+    # διαχειρίζονται το bot από το τρίτο chat.
+    if chat_id == admin_chat_id and main_group_id and main_group_id not in chat_ids:
+        chat_ids.append(main_group_id)
+
+    for candidate in chat_ids:
+        try:
+            member = await context.bot.get_chat_member(candidate, user_id)
+            if member.status in {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER}:
+                return True
+        except TelegramError:
+            continue
+    return False
 
 
 async def require_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -374,17 +399,32 @@ def _manual_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[
     if message and message.reply_to_message and message.reply_to_message.from_user:
         user = message.reply_to_message.from_user
         return user.id, user.username, user.first_name
-    if context.args and context.args[0].lstrip("-").isdigit():
-        user_id = int(context.args[0])
-        with db_connect() as conn:
-            row = conn.execute(
-                """
-                SELECT username, first_name FROM members
-                WHERE user_id=? ORDER BY last_active DESC LIMIT 1
-                """,
-                (user_id,),
-            ).fetchone()
-        return user_id, (row["username"] if row else None), (row["first_name"] if row else None)
+    if context.args:
+        target = context.args[0].strip()
+        if target.lstrip("-").isdigit():
+            user_id = int(target)
+            with db_connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT username, first_name FROM members
+                    WHERE user_id=? ORDER BY last_active DESC LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+            return user_id, (row["username"] if row else None), (row["first_name"] if row else None)
+        username = target.lstrip("@").lower()
+        if username:
+            with db_connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT user_id,username,first_name FROM members
+                    WHERE LOWER(username)=?
+                    ORDER BY last_active DESC LIMIT 1
+                    """,
+                    (username,),
+                ).fetchone()
+            if row:
+                return int(row["user_id"]), row["username"], row["first_name"]
     return None, None, None
 
 
@@ -396,7 +436,7 @@ async def _manual_verify_change(
     target_id, username, first_name = _manual_target(update, context)
     if target_id is None:
         await update.effective_message.reply_text(
-            "Κάνε reply σε μήνυμα μέλους ή γράψε την εντολή με Telegram ID."
+            "Κάνε reply σε μήνυμα μέλους ή γράψε την εντολή με @username / Telegram ID."
         )
         return
     if target_id == context.bot.id:
@@ -405,7 +445,7 @@ async def _manual_verify_change(
     current = is_verified(target_id)
     new_value = (not current) if toggle else value
     actor_id = update.effective_user.id
-    chat_id = update.effective_chat.id if update.effective_chat else 0
+    chat_id = management_target_chat_id(update)
     set_verified(
         target_id, new_value, actor_id=actor_id, source="manual", chat_id=chat_id,
         username=username, first_name=first_name
@@ -441,7 +481,7 @@ async def is_verified_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     target_id, username, first_name = _manual_target(update, context)
     if target_id is None:
         await update.effective_message.reply_text(
-            "Κάνε reply σε μήνυμα μέλους ή γράψε /isverified Telegram_ID."
+            "Κάνε reply σε μήνυμα μέλους ή γράψε /isverified @username ή Telegram_ID."
         )
         return
     with db_connect() as conn:
@@ -465,7 +505,7 @@ async def is_verified_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def verify_all_known(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_admin(update, context):
         return
-    chat_id = update.effective_chat.id
+    chat_id = management_target_chat_id(update)
     actor_id = update.effective_user.id
     with db_connect() as conn:
         rows = conn.execute(
@@ -500,7 +540,7 @@ async def unverify_all_known(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode=ParseMode.HTML,
         )
         return
-    chat_id = update.effective_chat.id
+    chat_id = management_target_chat_id(update)
     actor_id = update.effective_user.id
     with db_connect() as conn:
         rows = conn.execute(
@@ -519,7 +559,7 @@ async def unverify_all_known(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def verify_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_admin(update, context):
         return
-    chat_id = update.effective_chat.id
+    chat_id = management_target_chat_id(update)
     with db_connect() as conn:
         total = int(conn.execute("SELECT COUNT(DISTINCT user_id) c FROM members WHERE chat_id=?", (chat_id,)).fetchone()["c"])
         verified = int(conn.execute(
@@ -538,7 +578,7 @@ async def verify_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def _verification_list(update: Update, context: ContextTypes.DEFAULT_TYPE, value: bool) -> None:
     if not await require_admin(update, context):
         return
-    chat_id = update.effective_chat.id
+    chat_id = management_target_chat_id(update)
     with db_connect() as conn:
         rows = conn.execute(
             """
@@ -632,6 +672,9 @@ async def smart_scam_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     chat, user, message = update.effective_chat, update.effective_user, update.effective_message
     if not chat or not user or not message or user.is_bot:
         return
+    main_id = get_main_group_id()
+    if not main_id or chat.id != main_id:
+        return
     if await is_admin(context, chat.id, user.id):
         return
     text = (message.text or message.caption or "").strip()
@@ -676,6 +719,9 @@ async def v3_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
         return
+    main_id = get_main_group_id()
+    if not main_id or chat.id != main_id:
+        return
     _, level, leveled = update_activity(chat.id, user)
     if leveled and feature_enabled(chat.id, "levels") and feature_enabled(chat.id, "level_notices"):
         await message.reply_text(
@@ -690,6 +736,9 @@ async def setup_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.effective_message.reply_text("Η εντολή γίνεται μέσα στην κύρια ομάδα.")
         return
     if not await require_admin(update, context):
+        return
+    if chat.id == get_admin_chat_id():
+        await update.effective_message.reply_text("❌ Το admin chat πρέπει να είναι διαφορετικό από την κύρια ομάδα.")
         return
     set_setting(0, "main_group_id", str(chat.id))
     await update.effective_message.reply_text("✅ Αυτή ορίστηκε ως κύρια ομάδα Secret Club.")
@@ -708,7 +757,7 @@ async def setup_admin_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     set_setting(0, "admin_chat_id", str(chat.id))
     await update.effective_message.reply_text(
-        "✅ Αυτή ορίστηκε ως admin chat για verification, tickets και reports."
+        "✅ Αυτή ορίστηκε ως Admin Control Chat για panel, verification, tickets, reports και logs.\nΓράψε τώρα /panel."
     )
 
 
@@ -716,7 +765,7 @@ async def setup_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await require_admin(update, context):
         return
     await update.effective_message.reply_text(
-        f"⚙️ <b>V3 SETUP</b>\n\n"
+        f"⚙️ <b>V4 SETUP</b>\n\n"
         f"Κύρια ομάδα: {'✅' if get_main_group_id() else '❌'}\n"
         f"Admin chat: {'✅' if get_admin_chat_id() else '❌'}\n"
         f"Volume/database: <code>{html.escape(DATABASE_PATH)}</code>\n"
@@ -729,7 +778,7 @@ async def setup_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def feature_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_admin(update, context):
         return
-    chat_id = update.effective_chat.id
+    chat_id = management_target_chat_id(update)
     if not context.args:
         lines = ["⚙️ <b>V3 FEATURES</b>"]
         for name in FEATURE_DEFAULTS:
@@ -751,7 +800,7 @@ async def feature_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_admin(update, context):
         return
-    chat_id = update.effective_chat.id
+    chat_id = management_target_chat_id(update)
     now = int(time.time())
     with db_connect() as conn:
         total = conn.execute("SELECT COUNT(*) c FROM members WHERE chat_id=?", (chat_id,)).fetchone()["c"]
@@ -846,11 +895,17 @@ async def announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         await update.effective_message.reply_text("/announce κείμενο")
         return
+    target_id = management_target_chat_id(update)
+    if not target_id:
+        await update.effective_message.reply_text("❌ Δεν έχει συνδεθεί κύρια ομάδα.")
+        return
     await context.bot.send_message(
-        update.effective_chat.id,
+        target_id,
         f"📢 <b>ΑΝΑΚΟΙΝΩΣΗ</b>\n\n{html.escape(text)}",
         parse_mode=ParseMode.HTML,
     )
+    if update.effective_chat.id != target_id:
+        await update.effective_message.reply_text("✅ Η ανακοίνωση στάλθηκε στην κύρια ομάδα.")
 
 
 def valid_hhmm(value: str) -> bool:
@@ -886,13 +941,17 @@ async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not spec or not text:
         await update.effective_message.reply_text("❌ Λάθος μορφή. Γράψε /schedule για παραδείγματα.")
         return
+    target_id = management_target_chat_id(update)
+    if not target_id:
+        await update.effective_message.reply_text("❌ Δεν έχει συνδεθεί κύρια ομάδα.")
+        return
     with db_connect() as conn:
         cur = conn.execute(
             """
             INSERT INTO schedules(chat_id,created_by,schedule_kind,schedule_spec,text,enabled,created_at)
             VALUES(?,?,?,?,?,1,?)
             """,
-            (update.effective_chat.id, update.effective_user.id, kind, spec, text[:3500], int(time.time())),
+            (target_id, update.effective_user.id, kind, spec, text[:3500], int(time.time())),
         )
         schedule_id = int(cur.lastrowid)
     await update.effective_message.reply_text(f"✅ Πρόγραμμα #{schedule_id} δημιουργήθηκε.")
@@ -901,10 +960,11 @@ async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def schedules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_admin(update, context):
         return
+    target_id = management_target_chat_id(update)
     with db_connect() as conn:
         rows = conn.execute(
             "SELECT * FROM schedules WHERE chat_id=? AND enabled=1 ORDER BY id",
-            (update.effective_chat.id,),
+            (target_id,),
         ).fetchall()
     if not rows:
         await update.effective_message.reply_text("Δεν υπάρχουν ενεργά προγράμματα.")
@@ -924,7 +984,7 @@ async def delschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     with db_connect() as conn:
         cur = conn.execute(
             "UPDATE schedules SET enabled=0 WHERE id=? AND chat_id=?",
-            (int(context.args[0]), update.effective_chat.id),
+            (int(context.args[0]), management_target_chat_id(update)),
         )
     await update.effective_message.reply_text("✅ Διαγράφηκε." if cur.rowcount else "Δεν βρέθηκε.")
 
@@ -981,7 +1041,7 @@ def inactive_candidates(chat_id: int) -> list[sqlite3.Row]:
 async def inactive_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_admin(update, context):
         return
-    rows = inactive_candidates(update.effective_chat.id)
+    rows = inactive_candidates(management_target_chat_id(update))
     if not rows:
         await update.effective_message.reply_text(f"✅ Δεν βρέθηκαν inactive για {INACTIVE_DAYS}+ ημέρες.")
         return
@@ -1037,7 +1097,7 @@ async def process_inactive(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> 
 async def inactive_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_admin(update, context):
         return
-    warned, kicked, skipped = await process_inactive(context, update.effective_chat.id)
+    warned, kicked, skipped = await process_inactive(context, management_target_chat_id(update))
     await update.effective_message.reply_text(
         f"✅ Έλεγχος ολοκληρώθηκε.\nΠροειδοποιήθηκαν: {warned}\nΑφαιρέθηκαν: {kicked}\nΠαραλείφθηκαν: {skipped}"
     )
@@ -1078,8 +1138,8 @@ async def v3_adminhelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /inactive_run
 
 <b>Manual verification</b>
-/verifyuser [ID] ή reply
-/unverifyuser [ID] ή reply
+/verifyuser @username | ID | reply
+/unverifyuser @username | ID | reply
 /toggleverify [ID] ή reply
 /isverified [ID] ή reply
 /verifyallknown
@@ -1087,7 +1147,7 @@ async def v3_adminhelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /verifiedlist
 /unverifiedlist
 /verifystats
-/setwelcome (στην ομάδα)
+/setwelcome (στο Admin Control Chat)
 
 Τα moderation commands της v2 παραμένουν κανονικά.
 """.strip(),

@@ -14,6 +14,7 @@ from v3_core import (
     feature_enabled,
     format_user,
     get_admin_chat_id,
+    get_main_group_id,
     initialize_v3,
     is_admin,
     register_core_handlers,
@@ -40,6 +41,8 @@ async def join_request_v3(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not request:
         return
     chat_id = request.chat.id
+    if not get_main_group_id() or chat_id != get_main_group_id():
+        return
     user = request.from_user
     if feature_enabled(chat_id, "auto_approve"):
         return  # Το βασικό bot χειρίζεται το auto-approve.
