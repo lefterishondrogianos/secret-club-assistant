@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Final, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from telegram import ChatPermissions, Update, User
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Update, User
 from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-VERSION: Final[str] = "4.0.0"
+VERSION: Final[str] = "4.1.0"
 DATABASE_PATH: Final[str] = os.getenv("DATABASE_PATH", "/data/secret_club.db")
 ENV_MAIN_GROUP_ID: Final[int] = int(os.getenv("MAIN_GROUP_ID", "0") or 0)
 ENV_ADMIN_CHAT_ID: Final[int] = int(os.getenv("ADMIN_CHAT_ID", "0") or 0)
@@ -55,6 +55,13 @@ WEEKDAYS: Final[dict[str, int]] = {
 }
 
 logger = logging.getLogger("secret-club-v3-core")
+
+from rank_v41 import (
+    format_leaderboard as v41_format_leaderboard,
+    format_user_rank as v41_format_user_rank,
+    rank_home_keyboard as v41_rank_home_keyboard,
+    record_message_activity as v41_record_message_activity,
+)
 
 SCAM_PATTERNS: Final[list[re.Pattern[str]]] = [
     re.compile(r"\b(?:στείλε|δώσε)\s+(?:μου\s+)?(?:τον\s+)?(?:κωδικό|otp)\b", re.I),
@@ -216,6 +223,10 @@ def initialize_v3() -> None:
             """,
             (now,),
         )
+
+        # IMPORTANT: V4.1 ranking migration is deliberately separate and never
+        # deletes, truncates or rewrites verified_users. Existing verification
+        # decisions remain the source of truth after every deploy.
 
 
 def get_setting(scope_id: int, key: str) -> Optional[str]:
@@ -723,6 +734,9 @@ async def v3_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not main_id or chat.id != main_id:
         return
     _, level, leveled = update_activity(chat.id, user)
+    # V4.1 ranking: every accepted Telegram message is recorded with no
+    # score cooldown or daily cap. Existing anti-spam moderation stays intact.
+    v41_record_message_activity(chat.id, user, message)
     if leveled and feature_enabled(chat.id, "levels") and feature_enabled(chat.id, "level_notices"):
         await message.reply_text(
             f"🎉 {user.mention_html()} ανέβηκε στο level <b>{level}</b>!",
@@ -848,21 +862,12 @@ async def rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat_id:
         await update.effective_message.reply_text("Η κύρια ομάδα δεν έχει συνδεθεί.")
         return
-    with db_connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM members WHERE chat_id=? AND user_id=?",
-            (chat_id, update.effective_user.id),
-        ).fetchone()
-    if not row:
-        await update.effective_message.reply_text("Δεν έχει καταγραφεί ακόμα δραστηριότητά σου.")
-        return
-    level, xp = int(row["level"]), int(row["xp"])
+    text = v41_format_user_rank(chat_id, update.effective_user.id)
     await update.effective_message.reply_text(
-        f"🏆 {update.effective_user.mention_html()}\n\n"
-        f"Level: <b>{level}</b>\nXP: <b>{xp}</b>\n"
-        f"Επόμενο level: <b>{xp_for_next_level(level)}</b> XP\n"
-        f"Μηνύματα: <b>{int(row['message_count'])}</b>",
+        text,
         parse_mode=ParseMode.HTML,
+        reply_markup=v41_rank_home_keyboard(),
+        disable_web_page_preview=True,
     )
 
 
@@ -870,22 +875,14 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if update.effective_chat.type == ChatType.PRIVATE:
         chat_id = get_main_group_id()
-    with db_connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT username, first_name, xp, level FROM members
-            WHERE chat_id=? ORDER BY xp DESC, message_count DESC LIMIT 10
-            """,
-            (chat_id,),
-        ).fetchall()
-    if not rows:
-        await update.effective_message.reply_text("Δεν υπάρχουν ακόμα στατιστικά.")
+    if not chat_id:
+        await update.effective_message.reply_text("Η κύρια ομάδα δεν έχει συνδεθεί.")
         return
-    lines = ["🏆 <b>TOP 10 ΔΡΑΣΤΗΡΙΟΤΗΤΑΣ</b>"]
-    for i, row in enumerate(rows, 1):
-        name = f"@{html.escape(row['username'])}" if row["username"] else html.escape(row["first_name"] or "Μέλος")
-        lines.append(f"{i}. {name} — Level {int(row['level'])} / {int(row['xp'])} XP")
-    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text(
+        v41_format_leaderboard(chat_id, "month"),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 async def announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

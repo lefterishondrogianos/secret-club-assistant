@@ -763,6 +763,12 @@ async def delete_my_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         conn.execute("DELETE FROM tickets WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM ai_usage WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM daily_activity WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM rank_daily WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM rank_message_authors WHERE user_id=?", (user_id,))
+        conn.execute(
+            "DELETE FROM rank_reaction_state WHERE reactor_user_id=? OR recipient_user_id=?",
+            (user_id, user_id),
+        )
         conn.execute("DELETE FROM members WHERE user_id=?", (user_id,))
         conn.execute("UPDATE moderation_log SET target_id=NULL WHERE target_id=?", (user_id,))
         conn.execute("UPDATE moderation_log SET actor_id=NULL WHERE actor_id=?", (user_id,))

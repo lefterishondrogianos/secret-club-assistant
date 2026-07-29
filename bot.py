@@ -100,6 +100,8 @@ from v4_ui import (
     start_router as v4_start_router,
 )
 
+from rank_v41 import initialize_rank_system, register_rank_system
+
 logger = logging.getLogger("secret-club-assistant")
 
 # Πρόχειρη μνήμη για flood/repeated messages.
@@ -1829,6 +1831,7 @@ def run() -> None:
     init_db()
     initialize_v3()
     initialize_v4()
+    initialize_rank_system()
 
     application = (
         Application.builder()
@@ -1839,6 +1842,8 @@ def run() -> None:
 
     # V3 handlers μπαίνουν πρώτα, πριν από το γενικό callback της v2.
     register_v3_handlers(application)
+    # V4.1 reaction tracking + automatic Friday/month-end rank posts.
+    register_rank_system(application)
 
     # Ιδιωτικό menu / inline buttons
     application.add_handler(CommandHandler("start", start))
@@ -1895,7 +1900,7 @@ def run() -> None:
 
     application.add_error_handler(error_handler)
 
-    logger.info("Secret Club Assistant v4.0 professional starting")
+    logger.info("Secret Club Assistant v4.1 rankings starting")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=False,

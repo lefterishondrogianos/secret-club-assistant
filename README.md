@@ -1,6 +1,4 @@
-# Secret Club Assistant V3.6
-
-# Secret Club Assistant v3.0.0
+# Secret Club Assistant V4.1 — Rankings Edition
 
 Πλήρης αναβάθμιση της λειτουργικής v2, με ασφαλή μετάβαση και αυτόματη αναβάθμιση της υπάρχουσας βάσης.
 
@@ -16,7 +14,7 @@
 - Αναφορές με screenshots
 - Αυτόματη δημιουργία και δημοσίευση παρουσίασης
 - Έλεγχο παρουσίασης πριν από τη δημοσίευση
-- Dashboard, XP, levels, `/rank` και `/top`
+- Dashboard, XP/levels και νέο `/rank` με Top 5 εβδομάδας, Top 10 μήνα, μηνύματα, interactions και hot content
 - Join requests με κουμπιά έγκρισης/απόρριψης
 - Προγραμματισμένες ανακοινώσεις και events
 - Safe inactivity δύο σταδίων: προειδοποίηση και μετά προαιρετικό kick
@@ -26,6 +24,19 @@
 
 ---
 
+
+## V4.1 αυτόματο ranking
+
+Το bot δημοσιεύει αυτόματα:
+
+- κάθε Παρασκευή στις **22:00** ώρα Ελλάδας το Top 5 εβδομάδας,
+- την τελευταία ημέρα κάθε μήνα στις **22:00** το Top 10 μήνα.
+
+Στο Admin Control Center υπάρχει νέα ενότητα **🏆 Rankings** για κατάσταση και χειροκίνητη δημοσίευση. Κάθε μήνυμα μετρά χωρίς score cooldown ή ημερήσιο score cap. Το υπάρχον anti-spam moderation παραμένει ανεξάρτητο.
+
+Η αναβάθμιση δεν διαγράφει ή μηδενίζει το `verified_users`. Χρησιμοποιεί μόνο `CREATE TABLE IF NOT EXISTS` και ασφαλές migration.
+
+---
 ## 1. Αντικατάσταση αρχείων στο GitHub
 
 Ανέβασε όλα τα παρακάτω αρχεία από το ZIP και επίλεξε **Commit changes**:
@@ -34,6 +45,8 @@
 - `v3_core.py`
 - `v3_flows.py`
 - `v3_features.py`
+- `v4_ui.py`
+- `rank_v41.py`
 - `requirements.txt`
 - `Dockerfile`
 - `railway.json`

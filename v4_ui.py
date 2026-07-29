@@ -37,6 +37,16 @@ from v3_core import (
     set_verified,
 )
 
+from rank_v41 import (
+    format_leaderboard as v41_format_leaderboard,
+    format_user_rank as v41_format_user_rank,
+    publication_status_text as v41_publication_status_text,
+    publish_leaderboard as v41_publish_leaderboard,
+    rank_back_keyboard as v41_rank_back_keyboard,
+    rank_home_keyboard as v41_rank_home_keyboard,
+    rank_home_text as v41_rank_home_text,
+)
+
 logger = logging.getLogger("secret-club-v4-ui")
 
 BOT_USERNAME = ""
@@ -312,86 +322,7 @@ def _verification_screen(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 
 def _rank_screen(user_id: int) -> str:
-    chat_id = get_main_group_id()
-    if not chat_id:
-        return "📊 <b>ΤΟ RANK ΜΟΥ</b>\n\nΗ κύρια ομάδα δεν έχει συνδεθεί ακόμη."
-    with db_connect() as conn:
-        row = conn.execute(
-            "SELECT xp,level,message_count FROM members WHERE chat_id=? AND user_id=?",
-            (chat_id, user_id),
-        ).fetchone()
-        if not row:
-            return "📊 <b>ΤΟ RANK ΜΟΥ</b>\n\nΔεν υπάρχει ακόμη καταγεγραμμένη δραστηριότητα."
-        position_row = conn.execute(
-            "SELECT COUNT(*) + 1 AS pos FROM members WHERE chat_id=? AND xp>?",
-            (chat_id, int(row["xp"] or 0)),
-        ).fetchone()
-    return (
-        "📊 <b>ΤΟ RANK ΜΟΥ</b>\n\n"
-        f"Level: <b>{int(row['level'] or 1)}</b>\n"
-        f"XP: <b>{int(row['xp'] or 0)}</b>\n"
-        f"Μηνύματα: <b>{int(row['message_count'] or 0)}</b>\n"
-        f"Θέση: <b>#{int(position_row['pos'] or 1)}</b>"
-    )
-
-
-async def _show_rules_route(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    request_access: bool = False,
-) -> None:
-    user = update.effective_user
-    if not user:
-        return
-
-    main_id = get_main_group_id()
-    accepted = False
-    known_member = False
-    if main_id:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT rules_accepted FROM members WHERE chat_id=? AND user_id=?",
-                (main_id, user.id),
-            ).fetchone()
-        if row:
-            known_member = True
-            accepted = bool(row["rules_accepted"])
-        elif request_access:
-            try:
-                membership = await context.bot.get_chat_member(main_id, user.id)
-                known_member = membership.status not in {ChatMemberStatus.LEFT, ChatMemberStatus.BANNED}
-            except TelegramError:
-                known_member = False
-
-    text = RULES_TEXT
-    extra: list[list[InlineKeyboardButton]] = []
-    if RULES_GATE_ENABLED and main_id and known_member:
-        if accepted:
-            text += "\n\n✅ <b>Έχεις ήδη αποδεχτεί τους κανόνες.</b>"
-        else:
-            text += (
-                "\n\n🔐 Για να ενεργοποιηθεί η δυνατότητα αποστολής μηνυμάτων "
-                "στην κύρια ομάδα, πάτησε αποδοχή."
-            )
-            extra.append([
-                InlineKeyboardButton(
-                    "✅ Αποδέχομαι τους κανόνες",
-                    callback_data=f"v4:accept:{main_id}",
-                )
-            ])
-    elif request_access and RULES_GATE_ENABLED:
-        text += (
-            "\n\nℹ️ Δεν βρέθηκε ενεργή συμμετοχή σου στην κύρια ομάδα. "
-            "Μπες πρώτα στην ομάδα και άνοιξε ξανά τους Κανόνες."
-        )
-
-    await show_member_screen(
-        update,
-        context,
-        text,
-        home_back_keyboard(extra=extra),
-    )
+    return v41_rank_home_text()
 
 
 async def show_route(update: Update, context: ContextTypes.DEFAULT_TYPE, route: str) -> None:
@@ -455,7 +386,7 @@ async def show_route(update: Update, context: ContextTypes.DEFAULT_TYPE, route: 
         )
         return
     if route == "rank":
-        await show_member_screen(update, context, _rank_screen(user.id), home_back_keyboard())
+        await show_member_screen(update, context, _rank_screen(user.id), v41_rank_home_keyboard())
         return
 
     await show_member_screen(update, context, HOME_TEXT, member_home_keyboard())
@@ -503,6 +434,32 @@ async def member_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     if data.startswith("v4:page:"):
         await show_route(update, context, data.split(":", 2)[2])
+        return
+    if data.startswith("v4:rank:"):
+        action = data.split(":", 2)[2]
+        chat_id = get_main_group_id()
+        if not chat_id:
+            await show_member_screen(
+                update, context,
+                "🏆 <b>RANKINGS</b>\n\nΗ κύρια ομάδα δεν έχει συνδεθεί ακόμη.",
+                v41_rank_back_keyboard(),
+            )
+            return
+        if action == "week":
+            text = v41_format_leaderboard(chat_id, "week")
+        elif action == "month":
+            text = v41_format_leaderboard(chat_id, "month")
+        elif action == "messages":
+            text = v41_format_leaderboard(chat_id, "month", category="messages", limit=10)
+        elif action == "interactions":
+            text = v41_format_leaderboard(chat_id, "month", category="interactions", limit=10)
+        elif action == "hot":
+            text = v41_format_leaderboard(chat_id, "month", category="hot", limit=10)
+        elif action == "me":
+            text = v41_format_user_rank(chat_id, query.from_user.id)
+        else:
+            text = v41_rank_home_text()
+        await show_member_screen(update, context, text, v41_rank_back_keyboard())
         return
     if data.startswith("v4:accept:"):
         parts = data.split(":")
@@ -612,6 +569,7 @@ def admin_home_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎫 Tickets", callback_data="v4admin:tickets"),
             InlineKeyboardButton("👥 Members", callback_data="v4admin:members"),
         ],
+        [InlineKeyboardButton("🏆 Rankings", callback_data="v4admin:rankings")],
         [
             InlineKeyboardButton("📢 Broadcast", callback_data="v4admin:broadcast"),
             InlineKeyboardButton("⚙️ Settings", callback_data="v4admin:settings"),
@@ -694,7 +652,7 @@ def _status_text() -> str:
     welcome_enabled = get_setting(main_id, "welcome_enabled") if main_id else None
     auto_delete = get_setting(main_id, "welcome_autodelete") if main_id else None
     return (
-        "🤖 <b>BOT STATUS — V4.0</b>\n\n"
+        "🤖 <b>BOT STATUS — V4.1</b>\n\n"
         f"Έκδοση core: <b>{html.escape(VERSION)}</b>\n"
         f"Bot username: <b>@{html.escape(BOT_USERNAME or 'unknown')}</b>\n"
         f"Κύρια ομάδα ID: <code>{main_id or 'NOT SET'}</code>\n"
@@ -706,6 +664,8 @@ def _status_text() -> str:
         f"Rules gate: <b>{'ON' if RULES_GATE_ENABLED else 'OFF'}</b>\n"
         f"Anti-links: <b>{'ON' if ANTI_LINKS_ENABLED else 'OFF'}</b>\n"
         f"Anti-spam: <b>{'ON' if ANTI_SPAM_ENABLED else 'OFF'}</b>\n"
+        f"Rank auto-post: <b>Παρασκευή & τέλος μήνα, 22:00</b>\n"
+        f"Rank score cap: <b>Κανένα</b>\n"
         f"Members: <b>{counts['members']}</b>\n"
         f"Verified: <b>{counts['verified']}</b>\n"
         f"Pending verification: <b>{counts['pending_verify']}</b>\n"
@@ -1007,6 +967,35 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if action == "members":
         await _edit_admin(query, _members_panel_text(main_id), admin_back_keyboard(extra=[[InlineKeyboardButton("🔄 Refresh", callback_data="v4admin:members")]]))
+        return
+    if action == "rankings":
+        keyboard = admin_back_keyboard(extra=[
+            [
+                InlineKeyboardButton("📤 Δημοσίευση εβδομάδας τώρα", callback_data="v4admin:rank_publish_week"),
+                InlineKeyboardButton("📤 Δημοσίευση μήνα τώρα", callback_data="v4admin:rank_publish_month"),
+            ],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="v4admin:rankings")],
+        ])
+        await _edit_admin(query, v41_publication_status_text(main_id), keyboard)
+        return
+    if action in {"rank_publish_week", "rank_publish_month"}:
+        if not main_id:
+            await query.answer("Δεν έχει συνδεθεί κύρια ομάδα.", show_alert=True)
+            return
+        kind = "week" if action.endswith("week") else "month"
+        sent = await v41_publish_leaderboard(context, kind, force=True)
+        await query.answer(
+            "✅ Η κατάταξη δημοσιεύτηκε στην κύρια ομάδα." if sent else "Δεν υπάρχουν ακόμη δεδομένα για δημοσίευση.",
+            show_alert=True,
+        )
+        keyboard = admin_back_keyboard(extra=[
+            [
+                InlineKeyboardButton("📤 Δημοσίευση εβδομάδας τώρα", callback_data="v4admin:rank_publish_week"),
+                InlineKeyboardButton("📤 Δημοσίευση μήνα τώρα", callback_data="v4admin:rank_publish_month"),
+            ],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="v4admin:rankings")],
+        ])
+        await _edit_admin(query, v41_publication_status_text(main_id), keyboard)
         return
     if action == "broadcast":
         text = (
